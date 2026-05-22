@@ -1,0 +1,400 @@
+import os
+import time
+import subprocess
+import csv
+import logging
+from datetime import datetime
+from tabulate import tabulate
+
+# ===== COLORS =====
+RED    = "\033[91m"
+GREEN  = "\033[92m"
+YELLOW = "\033[93m"
+BLUE   = "\033[94m"
+CYAN   = "\033[96m"
+RESET  = "\033[0m"
+
+# ===== LOGGING =====
+logging.basicConfig(
+    filename="rasflipper.log",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+# ===========================================================
+#  UTILITIES
+# ===========================================================
+
+def clear():
+    os.system("clear")
+
+def hacker_sound(text):
+    os.system(f'espeak "{text}" 2>/dev/null &')
+
+def hacker_text(text):
+    print(CYAN, end="")
+    for char in text:
+        print(char, end="", flush=True)
+        time.sleep(0.01)
+    print(RESET + "\n")
+
+def header(title):
+    print(GREEN + "=" * 60)
+    print(title.center(60))
+    print("=" * 60 + RESET)
+
+def run_command(cmd):
+    """Run a shell command and return its output as a string."""
+    try:
+        output = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode(errors="ignore")
+        logging.info(f"Command run: {cmd}")
+        return output
+    except subprocess.CalledProcessError:
+        logging.error(f"Error running command: {cmd}")
+        return ""
+
+# ===========================================================
+#  WiFi MODULE  (rasflipper_wifi_intelligence.py integrated)
+# ===========================================================
+
+def wifi_classify_security(enc):
+    enc = enc.lower()
+    if "open"  in enc: return "HIGH (Open Network)"
+    if "wep"   in enc: return "HIGH (WEP – Broken)"
+    if "wpa3"  in enc: return "VERY LOW (Strong WPA3)"
+    if "wpa2"  in enc: return "LOW (Secure WPA2)"
+    if "wpa"   in enc: return "MEDIUM (Old WPA)"
+    return "UNKNOWN"
+
+def wifi_detect_interface():
+    output = run_command("iw dev")
+    for line in output.split("\n"):
+        if "Interface" in line:
+            return line.split()[1]
+    return None
+
+def wifi_scan_networks(interface):
+    output = run_command(f"sudo iw dev {interface} scan")
+
+    networks  = []
+    ssid_map  = {}
+    current   = {}
+
+    for line in output.split("\n"):
+        line = line.strip()
+
+        if line.startswith("BSS"):
+            if current:
+                networks.append(current)
+            current = {}
+            try:
+                current["bssid"] = line.split()[1].split("(")[0]
+            except IndexError:
+                current["bssid"] = "N/A"
+
+        elif "SSID:" in line:
+            ssid = line.split("SSID:")[1].strip()
+            current["ssid"] = ssid if ssid else "Hidden"
+
+        elif "signal:" in line:
+            current["signal"] = line.split("signal:")[1].split()[0]
+
+        elif "DS Parameter set:" in line and "channel" in line:
+            current["channel"] = line.split("channel")[1].strip()
+
+        elif "primary channel:" in line:
+            current["channel"] = line.split()[-1]
+
+        elif "RSN:" in line:
+            current["encryption"] = "WPA2"
+
+        elif "WPA:" in line and "encryption" not in current:
+            current["encryption"] = "WPA"
+
+    if current:
+        networks.append(current)
+
+    # Fill defaults
+    for net in networks:
+        net.setdefault("encryption", "OPEN")
+        net.setdefault("channel",    "N/A")
+        net.setdefault("signal",     "N/A")
+        net.setdefault("ssid",       "Hidden")
+
+    # Build SSID map for rogue-AP detection
+    for net in networks:
+        ssid_map.setdefault(net["ssid"], []).append(net["bssid"])
+
+    for net in networks:
+        ssid = net["ssid"]
+        net["rogue"] = "YES ⚠️" if ssid != "Hidden" and len(ssid_map[ssid]) > 1 else "NO"
+
+    return networks
+
+def wifi_save_csv(networks):
+    filename = f"wifi_intel_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.csv"
+    with open(filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["SSID", "BSSID", "Signal", "Channel", "Encryption", "Risk", "Rogue"])
+        for net in networks:
+            writer.writerow([
+                net["ssid"], net["bssid"], net["signal"], net["channel"],
+                net["encryption"], wifi_classify_security(net["encryption"]), net["rogue"]
+            ])
+    print(f"\n{GREEN}[+] Saved → {filename}{RESET}")
+    logging.info(f"WiFi scan saved to {filename}")
+
+def wifi_module():
+    clear()
+    header("📡 RASFLIPPER  –  WiFi Recon")
+    hacker_sound("wifi module activated")
+    hacker_text(">>> Initializing WiFi Intelligence Scan...")
+
+    interface = wifi_detect_interface()
+    if not interface:
+        print(RED + "[!] No WiFi interface found. Is your adapter connected?" + RESET)
+        input(YELLOW + "\nPress Enter to return..." + RESET)
+        return
+
+    print(f"{CYAN}[*] Using interface: {interface}{RESET}\n")
+
+    while True:
+        print(GREEN + "[1] Single Scan\n[2] Continuous Scan\n[3] Back" + RESET)
+        choice = input(YELLOW + "Select: " + RESET)
+
+        if choice == "1":
+            networks = wifi_scan_networks(interface)
+            rows = [
+                [n["ssid"], n["bssid"], n["signal"], n["channel"],
+                 n["encryption"], wifi_classify_security(n["encryption"]), n["rogue"]]
+                for n in networks
+            ]
+            print(tabulate(rows,
+                           headers=["SSID", "BSSID", "Signal", "Channel", "Enc", "Risk", "Rogue"],
+                           tablefmt="fancy_grid"))
+            wifi_save_csv(networks)
+
+        elif choice == "2":
+            interval = 10
+            try:
+                hacker_text(f">>> Continuous scan every {interval}s  –  CTRL+C to stop")
+                while True:
+                    networks = wifi_scan_networks(interface)
+                    rows = [
+                        [n["ssid"], n["bssid"], n["signal"], n["channel"],
+                         n["encryption"], wifi_classify_security(n["encryption"]), n["rogue"]]
+                        for n in networks
+                    ]
+                    print(tabulate(rows,
+                                   headers=["SSID", "BSSID", "Signal", "Channel", "Enc", "Risk", "Rogue"],
+                                   tablefmt="fancy_grid"))
+                    wifi_save_csv(networks)
+                    time.sleep(interval)
+            except KeyboardInterrupt:
+                print(RED + "\n[!] Scan stopped." + RESET)
+
+        elif choice == "3":
+            break
+
+        else:
+            print(RED + "Invalid choice." + RESET)
+
+    input(YELLOW + "\nPress Enter to return to main menu..." + RESET)
+
+# ===========================================================
+#  BLUETOOTH MODULE  (rasflipper_bluetooth.py integrated)
+# ===========================================================
+
+def bluetooth_risk(rssi, name):
+    """Return a risk/proximity string for a Bluetooth device."""
+    try:
+        rssi = int(rssi)
+    except (ValueError, TypeError):
+        return "UNKNOWN"
+
+    proximity = "VERY CLOSE" if rssi > -50 else ("MEDIUM" if rssi > -70 else "FAR")
+
+    if any(kw in name for kw in ("Jio", "TV", "STB")):
+        device_type, risk = "IoT",    "MEDIUM"
+    elif any(kw in name for kw in ("Phone", "Nokia")):
+        device_type, risk = "Mobile", "LOW"
+    else:
+        device_type, risk = "Unknown","MEDIUM"
+
+    return f"{risk} ({proximity}, {device_type})"
+
+def bluetooth_module():
+    clear()
+    header("🔵 RASFLIPPER  –  Bluetooth Scanner")
+    hacker_sound("bluetooth scanning started")
+    hacker_text(">>> Scanning Bluetooth Devices  (10 s)...")
+
+    # Use bluetoothctl to scan; capture NEW DEVICE lines
+    output = run_command("bluetoothctl --timeout 10 scan on 2>&1")
+
+    rows = []
+    seen = set()
+
+    for line in output.split("\n"):
+        if "Device" in line:
+            parts = line.split("Device")[1].strip().split(" ", 1)
+            if len(parts) < 1:
+                continue
+            mac  = parts[0].strip()
+            name = parts[1].strip() if len(parts) > 1 else "Unknown"
+
+            if mac in seen:
+                continue
+            seen.add(mac)
+
+            # bluetoothctl doesn't easily surface RSSI in scan output;
+            # we use hcitool for a quick RSSI lookup where available.
+            rssi = "N/A"
+            rssi_out = run_command(f"hcitool rssi {mac} 2>/dev/null")
+            if "RSSI return value:" in rssi_out:
+                try:
+                    rssi = rssi_out.split("RSSI return value:")[1].strip()
+                except IndexError:
+                    pass
+
+            risk = bluetooth_risk(rssi, name)
+            rows.append([name, mac, rssi, risk])
+
+    if rows:
+        print(tabulate(rows,
+                       headers=["Device Name", "MAC Address", "RSSI (dBm)", "Risk"],
+                       tablefmt="fancy_grid"))
+    else:
+        print(YELLOW + "[~] No Bluetooth devices found." + RESET)
+
+    input(YELLOW + "\nPress Enter to return to main menu..." + RESET)
+
+# ===========================================================
+#  SDR MODULE  (RTL-SDR_code.py integrated)
+# ===========================================================
+
+def sdr_save_csv(results):
+    filename = f"sdr_scan_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.csv"
+    with open(filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Frequency (MHz)", "Average Signal (dB)"])
+        writer.writerows(results)
+    print(f"\n{GREEN}[+] SDR results saved to {filename}{RESET}")
+    logging.info(f"SDR results saved to {filename}")
+
+def sdr_single_scan():
+    hacker_text(">>> Scanning RF Spectrum  (88 MHz – 108 MHz FM band)...")
+    scan_cmd = "rtl_power -f 88M:108M:1M -i 1 -g 20 -1"
+    output   = run_command(scan_cmd)
+
+    results = []
+    rows    = []
+
+    for line in output.split("\n"):
+        if "," in line:
+            parts = line.split(",")
+            if len(parts) >= 2:
+                freq   = parts[2].strip() if len(parts) > 2 else "N/A"
+                signal = parts[-1].strip()
+                results.append([freq, signal])
+                rows.append([freq, signal])
+
+    if rows:
+        print(tabulate(rows,
+                       headers=["Frequency (MHz)", "Avg Signal (dB)"],
+                       tablefmt="fancy_grid"))
+        sdr_save_csv(results)
+    else:
+        print(YELLOW + "[~] No signal data captured. Is the RTL-SDR dongle connected?" + RESET)
+
+def sdr_module():
+    clear()
+    header("📶 RASFLIPPER  –  SDR Scan")
+    hacker_sound("sdr scan started")
+
+    while True:
+        print(GREEN + "[1] Single SDR Scan\n[2] Continuous SDR Scan\n[3] Back" + RESET)
+        choice = input(YELLOW + "Select: " + RESET)
+
+        if choice == "1":
+            sdr_single_scan()
+
+        elif choice == "2":
+            interval = 30
+            try:
+                hacker_text(f">>> Continuous SDR scan every {interval}s  –  CTRL+C to stop")
+                while True:
+                    sdr_single_scan()
+                    time.sleep(interval)
+            except KeyboardInterrupt:
+                print(RED + "\n[!] SDR scan stopped." + RESET)
+
+        elif choice == "3":
+            break
+
+        else:
+            print(RED + "Invalid choice." + RESET)
+
+    input(YELLOW + "\nPress Enter to return to main menu..." + RESET)
+
+# ===========================================================
+#  LOCATION MODULE  (stub – location.py kept external)
+# ===========================================================
+
+def location_module():
+    clear()
+    header("📍 RASFLIPPER  –  Location")
+    hacker_sound("locating position")
+    hacker_text(">>> Fetching Location...")
+
+    if os.path.exists("location.py"):
+        os.system("sudo python3 location.py")
+    else:
+        print(YELLOW + "[~] location.py not found in current directory." + RESET)
+
+    input(YELLOW + "\nPress Enter to return to main menu..." + RESET)
+
+# ===========================================================
+#  MAIN MENU
+# ===========================================================
+
+BANNER = r"""
+██████╗  █████╗ ███████╗███████╗██╗     ██╗██████╗ ██████╗ ███████╗██████╗ 
+██╔══██╗██╔══██╗██╔════╝██╔════╝██║     ██║██╔══██╗██╔══██╗██╔════╝██╔══██╗
+██████╔╝███████║███████╗█████╗  ██║     ██║██████╔╝██████╔╝█████╗  ██████╔╝
+██╔══██╗██╔══██║╚════██║██╔══╝  ██║     ██║██╔═══╝ ██╔═══╝ ██╔══╝  ██╔══██╗
+██║  ██║██║  ██║███████║██║     ███████╗██║██║     ██║     ███████╗██║  ██║
+╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝     ╚══════╝╚═╝╚═╝     ╚═╝     ╚══════╝╚═╝  ╚═╝
+"""
+
+def main():
+    while True:
+        clear()
+        print(GREEN + BANNER + RESET)
+        print(CYAN + "=" * 55)
+        print("         RASFLIPPER  –  RF & Network Recon Suite")
+        print("=" * 55 + RESET)
+        print(GREEN + """
+  [1]  WiFi Scanner        📡
+  [2]  Bluetooth Scanner   🔵
+  [3]  SDR Scanner         📶
+  [4]  Location Finder     📍
+  [5]  Exit                ❌
+""" + RESET)
+
+        choice = input(YELLOW + "  Select Option: " + RESET).strip()
+
+        if   choice == "1": wifi_module()
+        elif choice == "2": bluetooth_module()
+        elif choice == "3": sdr_module()
+        elif choice == "4": location_module()
+        elif choice == "5":
+            hacker_sound("system shutting down")
+            print(GREEN + "\n  Goodbye!\n" + RESET)
+            break
+        else:
+            print(RED + "  [!] Invalid choice." + RESET)
+            time.sleep(1)
+
+if __name__ == "__main__":
+    main()
