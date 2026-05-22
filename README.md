@@ -104,3 +104,5 @@ The system runs directly from the Raspberry Pi terminal using Python scripts tha
 * Advanced RF protocol analysis
 * Portable cyberdeck enclosure
 * Multi-tool orchestration system
+
+<img width="1273" height="793" alt="hardware_pic" src="https://github.com/user-attachments/assets/5178fdd1-c889-4ba9-85cf-08adee0b6eb8" />
